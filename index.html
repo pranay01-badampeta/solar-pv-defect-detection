@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Solar PV Monitor</title>
+<style>
+  :root { --bg:#f4f7fb; --card:#fff; --ink:#14213d; --mute:#5d6b82; --line:#dfe6f0; --accent:#1f6feb; --ok:#1a7f37; --warn:#b35900; --bad:#c62828; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:#0b1a33; color:#fff; padding:20px max(16px,4vw); }
+  header h1 { margin:0; font-size:22px; }
+  header p { margin:4px 0 0; color:#a9c4ef; font-size:14px; }
+  main { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:20px; padding:24px max(16px,4vw); max-width:1100px; margin:0 auto; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:20px; }
+  h2 { margin:0 0 4px; font-size:17px; }
+  .sub { color:var(--mute); font-size:13px; margin:0 0 16px; }
+  .drop { border:2px dashed var(--line); border-radius:8px; padding:20px; text-align:center; cursor:pointer; color:var(--mute); }
+  .drop img { max-width:100%; max-height:220px; border-radius:6px; display:block; margin:0 auto; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  label { font-size:12px; color:var(--mute); display:block; }
+  input[type=number] { width:100%; padding:8px; border:1px solid var(--line); border-radius:6px; font-size:14px; margin-top:3px; }
+  button { margin-top:14px; width:100%; padding:10px; border:0; border-radius:6px; background:var(--accent); color:#fff; font-weight:600; font-size:14px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .result { margin-top:16px; padding:14px; border-radius:8px; background:#f0f5ff; display:none; }
+  .result .label { font-size:18px; font-weight:700; }
+  .result .advice { font-size:13px; color:var(--mute); margin-top:4px; }
+  .bar { display:flex; align-items:center; gap:8px; font-size:12px; margin-top:6px; }
+  .bar span:first-child { width:120px; }
+  .bar .track { flex:1; height:8px; background:var(--line); border-radius:4px; overflow:hidden; }
+  .bar .fill { height:100%; background:var(--accent); }
+  .note { font-size:12px; color:var(--warn); margin-top:8px; }
+  .error { color:var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Solar PV Monitor</h1>
+  <p>CNN defect classification from panel images and fault detection from sensor readings</p>
+</header>
+<main>
+  <section>
+    <h2>Panel image</h2>
+    <p class="sub">Upload a photo of a panel to classify its condition.</p>
+    <label class="drop" id="drop" for="image">Click to choose an image
+      <input type="file" id="image" accept="image/*" hidden>
+    </label>
+    <button id="imgBtn" disabled>Classify image</button>
+    {% if not cnn_ready %}<p class="note">No CNN model found. Run <code>python train_cnn.py</code> first.</p>{% endif %}
+    <div class="result" id="imgResult"></div>
+  </section>
+
+  <section>
+    <h2>Sensor reading</h2>
+    <p class="sub">Enter one reading from the inverter or data logger.</p>
+    <form id="sensorForm">
+      <div class="grid">
+        <label>Irradiance (W/m²)<input type="number" step="any" name="irradiance" value="850" required></label>
+        <label>Module temp (°C)<input type="number" step="any" name="module_temp" value="47" required></label>
+        <label>Ambient temp (°C)<input type="number" step="any" name="ambient_temp" value="24" required></label>
+        <label>DC voltage (V)<input type="number" step="any" name="voltage" value="30.8" required></label>
+        <label>DC current (A)<input type="number" step="any" name="current" value="5.1" required></label>
+      </div>
+      <button type="submit">Check for faults</button>
+    </form>
+    {% if not sensor_ready %}<p class="note">No sensor model found. Run <code>python sensor_faults.py --simulate</code> first.</p>{% endif %}
+    <div class="result" id="sensorResult"></div>
+  </section>
+</main>
+<script>
+const imgInput = document.getElementById('image');
+const drop = document.getElementById('drop');
+const imgBtn = document.getElementById('imgBtn');
+
+function show(el, data) {
+  el.style.display = 'block';
+  if (data.error) { el.innerHTML = `<div class="error">${data.error}</div>`; return; }
+  const bars = data.probabilities.slice(0, 4).map(p =>
+    `<div class="bar"><span>${p.label}</span><div class="track"><div class="fill" style="width:${(p.p*100).toFixed(0)}%"></div></div><span>${(p.p*100).toFixed(1)}%</span></div>`).join('');
+  el.innerHTML = `<div class="label">${data.prediction} · ${(data.confidence*100).toFixed(1)}%</div>
+    <div class="advice">${data.advice}${data.power !== undefined ? ` Power: ${data.power} W.` : ''}</div>${bars}`;
+}
+
+imgInput.addEventListener('change', () => {
+  const f = imgInput.files[0];
+  if (!f) return;
+  drop.innerHTML = '';
+  const img = document.createElement('img');
+  img.src = URL.createObjectURL(f);
+  drop.appendChild(img);
+  drop.appendChild(imgInput);
+  imgBtn.disabled = false;
+});
+
+imgBtn.addEventListener('click', async () => {
+  const fd = new FormData();
+  fd.append('image', imgInput.files[0]);
+  imgBtn.disabled = true;
+  const r = await fetch('/api/predict-image', { method: 'POST', body: fd });
+  show(document.getElementById('imgResult'), await r.json());
+  imgBtn.disabled = false;
+});
+
+document.getElementById('sensorForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const body = Object.fromEntries(new FormData(e.target));
+  const r = await fetch('/api/predict-sensor', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  show(document.getElementById('sensorResult'), await r.json());
+});
+</script>
+</body>
+</html>
